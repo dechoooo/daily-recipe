@@ -1,7 +1,7 @@
 ﻿name: recipe_app
 description: 玄灶 - 智能菜谱管理 App，支持 AI 生成、自定义分类、多媒体内容、主题自定义、数据导入导出
 publish_to: 'none'
-version: 2.0.0+2
+version: 1.0.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
