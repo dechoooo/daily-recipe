@@ -16,7 +16,7 @@ class DrawPage extends StatefulWidget {
   State<DrawPage> createState() => _DrawPageState();
 }
 
-class _DrawPageState extends State<DrawPage> with SingleTickerProviderStateMixin {
+class _DrawPageState extends State<DrawPage> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   List<Category> _categories = [];
   Map<int, int> _drawCounts = {};
   List<Recipe> _results = [];
@@ -27,6 +27,7 @@ class _DrawPageState extends State<DrawPage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _animController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
@@ -41,8 +42,16 @@ class _DrawPageState extends State<DrawPage> with SingleTickerProviderStateMixin
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _animController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadCategories();
+    }
   }
 
   Future<void> _loadCategories() async {
