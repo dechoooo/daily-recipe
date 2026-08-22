@@ -1,0 +1,32 @@
+name: recipe_app
+description: 玄灶 - 菜谱管理 App，支持自定义分类、多媒体内容、主题自定义、数据导入导出
+publish_to: 'none'
+version: 1.3.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  path_provider: ^2.1.1
+  shared_preferences: ^2.2.2
+  image_picker: ^1.0.4
+  video_player: ^2.9.1
+  file_picker: ^8.0.5
+  share_plus: ^9.0.0
+  provider: ^6.1.1
+  intl: ^0.18.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # assets:
+  #   - assets/default_background.png
