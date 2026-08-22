@@ -7,6 +7,7 @@ class Recipe {
   String tags;
   int? categoryId;
   String? imagePath;
+  String time; // 耗时文本，如 "30分钟"
   int createdAt;
   int updatedAt;
 
@@ -19,6 +20,7 @@ class Recipe {
     this.tags = "",
     this.categoryId,
     this.imagePath,
+    this.time = "",
     int? createdAt,
     int? updatedAt,
   })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
@@ -34,6 +36,7 @@ class Recipe {
       'tags': tags,
       'category_id': categoryId,
       'image_path': imagePath,
+      'time': time,
       'created_at': createdAt,
       'updated_at': updatedAt,
     };
@@ -49,6 +52,7 @@ class Recipe {
       tags: map['tags'] as String? ?? "",
       categoryId: map['category_id'] as int?,
       imagePath: map['image_path'] as String?,
+      time: map['time'] as String? ?? "",
       createdAt: map['created_at'] as int? ?? 0,
       updatedAt: map['updated_at'] as int? ?? 0,
     );

@@ -5,6 +5,7 @@ class AppConstants {
   static const String spKeyApiKey = "api_key";
   static const String spKeyThemeConfig = "theme_config";
   static const String spKeyDrawConfig = "draw_config";
+  static const String spKeyTagOrder = "tag_order";
 
   // 默认值（DeepSeek 示例，用户可在设置页改成豆包/其他）
   static const String defaultBaseUrl = "https://api.deepseek.com";
@@ -17,7 +18,7 @@ class AppConstants {
 
   // 数据库
   static const String dbName = "recipe_app.db";
-  static const int dbVersion = 3;
+  static const int dbVersion = 5;
 
   // 草稿 key 前缀
   static const String spKeyDraftPrefix = "draft_recipe_";

@@ -3,6 +3,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ai_api_service.dart';
 import '../utils/constants.dart';
 
+/// AI 整理菜谱页面
+/// 用户粘贴杂乱文本，AI 解析为结构化数据。
+/// 修复：友好错误提示，不直接暴露底层异常。
+/// AI 返回的 category 作为建议，tags 为选填。
 class AiRecipePage extends StatefulWidget {
   const AiRecipePage({super.key});
 
@@ -14,6 +18,13 @@ class _AiRecipePageState extends State<AiRecipePage> {
   final _rawCtrl = TextEditingController();
   AiRecipeResult? _result;
   bool _loading = false;
+  String? _errorMsg;
+
+  @override
+  void dispose() {
+    _rawCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _runAiParse() async {
     final sp = await SharedPreferences.getInstance();
@@ -38,7 +49,12 @@ class _AiRecipePageState extends State<AiRecipePage> {
       return;
     }
 
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _errorMsg = null;
+      _result = null;
+    });
+
     try {
       final res = await AiApiService.parseRawTextToRecipe(
         baseUrl: baseUrl,
@@ -46,15 +62,26 @@ class _AiRecipePageState extends State<AiRecipePage> {
         apiKey: apiKey,
         rawText: _rawCtrl.text,
       );
-      setState(() => _result = res);
+      if (mounted) {
+        setState(() {
+          _result = res;
+          _loading = false;
+        });
+      }
+    } on AiApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMsg = e.message;
+          _loading = false;
+        });
+      }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("解析失败: $e"), duration: const Duration(seconds: 5)),
-        );
+        setState(() {
+          _errorMsg = 'AI 解析失败，请检查网络和配置后重试';
+          _loading = false;
+        });
       }
-    } finally {
-      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -89,20 +116,64 @@ class _AiRecipePageState extends State<AiRecipePage> {
               child: ElevatedButton.icon(
                 onPressed: _loading ? null : _runAiParse,
                 icon: _loading
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
                     : const Icon(Icons.auto_awesome),
                 label: Text(_loading ? "AI整理中..." : "AI整理菜谱"),
                 style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+
+            // 错误提示
+            if (_errorMsg != null)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.warning_amber, color: Colors.red, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _errorMsg!,
+                        style: const TextStyle(color: Colors.red, fontSize: 14),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 16),
+
+            // 解析结果
             if (_result != null) ...[
               const Text("AI解析结果", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(
+                "提示：AI 生成的内容仅供参考，建议手动核对后保存",
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+              ),
               const SizedBox(height: 12),
               _resultCard("菜谱名称", _result!.name),
+              if (_result!.category.isNotEmpty)
+                _resultCard("建议分类", _result!.category),
+              if (_result!.time.isNotEmpty)
+                _resultCard("耗时", _result!.time),
               _resultCard("食材清单", _result!.ingredients),
               _resultCard("制作步骤", _result!.steps),
               _resultCard("小贴士", _result!.tips),
+              if (_result!.tags.isNotEmpty)
+                _resultCard("标签", _result!.tags.join('、')),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
@@ -129,7 +200,14 @@ class _AiRecipePageState extends State<AiRecipePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey.shade600,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(height: 4),
           Container(
             width: double.infinity,
@@ -139,7 +217,10 @@ class _AiRecipePageState extends State<AiRecipePage> {
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.grey.shade200),
             ),
-            child: Text(value.isEmpty ? "（空）" : value, style: const TextStyle(fontSize: 14, height: 1.5)),
+            child: Text(
+              value.isEmpty ? "（空）" : value,
+              style: const TextStyle(fontSize: 14, height: 1.5),
+            ),
           ),
         ],
       ),

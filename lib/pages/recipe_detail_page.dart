@@ -39,12 +39,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       _errorMsg = null;
     });
     try {
-      final r = await DatabaseService.instance.getById(widget.recipeId);
-      final variants = await DatabaseService.instance.getVariantsByRecipe(widget.recipeId);
-      final media = await DatabaseService.instance.getMediaByRecipe(widget.recipeId);
+      final r = await DatabaseService.instance().getById(widget.recipeId);
+      final variants = await DatabaseService.instance().getVariantsByRecipe(widget.recipeId);
+      final media = await DatabaseService.instance().getMediaByRecipe(widget.recipeId);
       Category? cat;
       if (r != null && r.categoryId != null) {
-        final cats = await DatabaseService.instance.getAllCategories();
+        final cats = await DatabaseService.instance().getAllCategories();
         cat = cats.where((c) => c.id == r.categoryId).firstOrNull;
       }
       if (mounted) {
@@ -149,18 +149,45 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       visualDensity: VisualDensity.compact,
                     ),
                   ),
-                // 标签
+                // 耗时
+                if (r.time.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.timer_outlined, size: 16, color: Colors.grey),
+                        const SizedBox(width: 4),
+                        Text('耗时：${r.time}', style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                      ],
+                    ),
+                  ),
+                // 标签（按 tags 表 sort_order 排序）
                 if (r.tagList.isNotEmpty)
-                  Wrap(
-                    spacing: 6,
-                    children: r.tagList
-                        .map((t) => Chip(
-                              label: Text(t, style: const TextStyle(fontSize: 12)),
-                              backgroundColor: Colors.orange.shade50,
-                              side: BorderSide.none,
-                              visualDensity: VisualDensity.compact,
-                            ))
-                        .toList(),
+                  FutureBuilder<List<String>>(
+                    future: DatabaseService.instance().getSortedTags(),
+                    builder: (_, snapshot) {
+                      final sortedOrder = snapshot.data ?? [];
+                      final sortedTags = List<String>.from(r.tagList)
+                        ..sort((a, b) {
+                          final ai = sortedOrder.indexOf(a);
+                          final bi = sortedOrder.indexOf(b);
+                          if (ai == -1 && bi == -1) return a.compareTo(b);
+                          if (ai == -1) return 1;
+                          if (bi == -1) return -1;
+                          return ai.compareTo(bi);
+                        });
+                      return Wrap(
+                        spacing: 6,
+                        children: sortedTags
+                            .map((t) => Chip(
+                                  label: Text(t, style: const TextStyle(fontSize: 12)),
+                                  backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.08),
+                                  side: BorderSide.none,
+                                  visualDensity: VisualDensity.compact,
+                                ))
+                            .toList(),
+                      );
+                    },
                   ),
                 const SizedBox(height: 12),
 

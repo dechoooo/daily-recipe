@@ -11,7 +11,12 @@ import '../models/media_item.dart';
 import '../models/variant.dart';
 import '../services/database_service.dart';
 import '../utils/constants.dart';
+import '../main.dart'; // 引入 globalRefreshNotifier
 
+/// 菜谱新增/编辑页
+/// 必填字段：菜名（校验）、分类（dropdown 强制选择）
+/// 新增字段：耗时（time）
+/// 支持快速新建分类、草稿恢复、做法变体管理。
 class RecipeEditPage extends StatefulWidget {
   final Recipe? recipe;
   const RecipeEditPage({super.key, this.recipe});
@@ -26,6 +31,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
   final _ingredientsCtrl = TextEditingController();
   final _stepsCtrl = TextEditingController();
   final _tipsCtrl = TextEditingController();
+  final _timeCtrl = TextEditingController(); // 耗时字段
 
   List<Category> _categories = [];
   int? _selectedCategoryId;
@@ -55,13 +61,12 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
       _nameCtrl.text = r.name;
       _selectedCategoryId = r.categoryId;
       _coverImagePath = r.imagePath;
+      _timeCtrl.text = r.time; // 恢复耗时
       _loadMedia(r.id!);
       _loadVariants(r.id!);
     } else {
       // 新建菜谱：创建默认变体
-      _variants = [
-        Variant(recipeId: 0, name: '默认做法'),
-      ];
+      _variants = [Variant(recipeId: 0, name: '默认做法')];
       _initVariantControllers();
       _tabController = TabController(length: 1, vsync: this);
       _tabController.addListener(() {
@@ -76,6 +81,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
     _ingredientsCtrl.addListener(_markChanged);
     _stepsCtrl.addListener(_markChanged);
     _tipsCtrl.addListener(_markChanged);
+    _timeCtrl.addListener(_markChanged);
   }
 
   void _markChanged() {
@@ -107,6 +113,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
             _nameCtrl.text = map['name'] ?? '';
             _selectedCategoryId = map['categoryId'] as int?;
             _coverImagePath = map['coverImagePath'] as String?;
+            _timeCtrl.text = map['time'] as String? ?? '';
             // 恢复变体
             final variantsJson = map['variants'] as List? ?? [];
             _variants = variantsJson.map((v) => Variant.fromMap(Map<String, dynamic>.from(v))).toList();
@@ -128,7 +135,6 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
   }
 
   Future<void> _saveDraftDebounced() async {
-    // 延迟保存草稿
     await Future.delayed(const Duration(milliseconds: 500));
     if (!_hasChanges || !mounted) return;
     await _saveDraft();
@@ -140,6 +146,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
       'name': _nameCtrl.text,
       'categoryId': _selectedCategoryId,
       'coverImagePath': _coverImagePath,
+      'time': _timeCtrl.text,
       'variants': _variants.map((v) => v.toMap()).toList(),
     };
     await sp.setString(_draftKey, jsonEncode(map));
@@ -169,17 +176,56 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
   }
 
   Future<void> _loadCategories() async {
-    final cats = await DatabaseService.instance.getAllCategories();
+    final cats = await DatabaseService.instance().getAllCategories();
     setState(() => _categories = cats);
   }
 
+  /// 快速新建分类（表单内 + 按钮）
+  Future<void> _quickCreateCategory() async {
+    final ctrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('新建分类'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+            labelText: '分类名称',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    try {
+      final cat = Category(name: name, sortOrder: _categories.length);
+      final id = await DatabaseService.instance().insertCategory(cat);
+      await _loadCategories();
+      setState(() => _selectedCategoryId = id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   Future<void> _loadMedia(int recipeId) async {
-    final media = await DatabaseService.instance.getMediaByRecipe(recipeId);
+    final media = await DatabaseService.instance().getMediaByRecipe(recipeId);
     setState(() => _mediaItems = media);
   }
 
   Future<void> _loadVariants(int recipeId) async {
-    final variants = await DatabaseService.instance.getVariantsByRecipe(recipeId);
+    final variants = await DatabaseService.instance().getVariantsByRecipe(recipeId);
     setState(() {
       _variants = variants;
       if (_variants.isEmpty) {
@@ -245,13 +291,10 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
     setState(() => _mediaItems.add(media));
   }
 
-  Future<void> _removeMedia(MediaItem media) async {
-    if (media.id != null) {
-      await DatabaseService.instance.deleteMedia(media.id!);
-    }
+  void _removeMedia(MediaItem media) {
     final file = File(media.filePath);
-    if (await file.exists()) {
-      await file.delete();
+    if (file.existsSync()) {
+      file.deleteSync();
     }
     setState(() => _mediaItems.remove(media));
   }
@@ -272,14 +315,10 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
     _markChanged();
   }
 
-  Future<void> _removeVariant(int idx) async {
+  void _removeVariant(int idx) {
     if (_variants.length <= 1) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("至少保留一个做法")));
       return;
-    }
-    final v = _variants[idx];
-    if (v.id != null) {
-      await DatabaseService.instance.deleteVariant(v.id!);
     }
     setState(() {
       _variants.removeAt(idx);
@@ -300,52 +339,75 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // 强制校验分类
+    if (_selectedCategoryId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请选择分类'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
     setState(() => _saving = true);
     try {
+      final db = DatabaseService.instance();
       final recipe = Recipe(
         id: widget.recipe?.id,
         name: _nameCtrl.text.trim(),
         ingredients: _ingredientsCtrl.text.trim(),
         steps: _stepsCtrl.text.trim(),
         tips: _tipsCtrl.text.trim(),
+        tags: '', // 编辑页不直接管理标签，通过 recipe_edit 的 tag 输入
         categoryId: _selectedCategoryId,
         imagePath: _coverImagePath,
+        time: _timeCtrl.text.trim(),
         createdAt: widget.recipe?.createdAt,
       );
+
       int recipeId;
       if (widget.recipe?.id == null) {
-        recipeId = await DatabaseService.instance.insert(recipe);
+        recipeId = await db.insertRecipe(recipe);
       } else {
-        await DatabaseService.instance.update(recipe);
+        await db.updateRecipe(recipe);
         recipeId = widget.recipe!.id!;
-        await DatabaseService.instance.deleteMediaByRecipe(recipeId);
       }
-      // Save media items
-      for (final media in _mediaItems) {
-        media.recipeId = recipeId;
-        if (media.id == null) {
-          await DatabaseService.instance.insertMedia(media);
+
+      // 保存多媒体
+      if (widget.recipe?.id != null) {
+        // 先清空旧的多媒体记录
+        final oldMedia = await db.getMediaByRecipe(recipeId);
+        for (final m in oldMedia) {
+          if (!_mediaItems.contains(m)) {
+            final file = File(m.filePath);
+            if (file.existsSync()) file.deleteSync();
+          }
         }
       }
-      // Save variants
-      await DatabaseService.instance.deleteVariantsByRecipe(recipeId);
+      // 重新保存多媒体
+      await db.saveMedia(recipeId, _mediaItems);
+
+      // 保存变体 — 从 controller 读取最新内容
       for (int i = 0; i < _variants.length; i++) {
         final v = _variants[i];
-        v.recipeId = recipeId;
-        v.sortOrder = i;
-        // 从 controller 读取最新内容
         v.name = _variantNameCtrls[i].text.trim();
         v.ingredients = _variantIngredientsCtrls[i].text.trim();
         v.steps = _variantStepsCtrls[i].text.trim();
         v.tips = _variantTipsCtrls[i].text.trim();
-        await DatabaseService.instance.insertVariant(v);
       }
+      await db.saveVariants(recipeId, _variants);
+
       // 清除草稿
       await _clearDraft();
+
+      // 触发全局刷新（藏膳 + 卜食同步刷新）
+      globalRefreshNotifier.value++;
+
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("保存失败: $e")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("保存失败: $e"), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -358,6 +420,7 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
     _ingredientsCtrl.dispose();
     _stepsCtrl.dispose();
     _tipsCtrl.dispose();
+    _timeCtrl.dispose();
     for (final ctrl in _variantNameCtrls) ctrl.dispose();
     for (final ctrl in _variantIngredientsCtrls) ctrl.dispose();
     for (final ctrl in _variantStepsCtrls) ctrl.dispose();
@@ -392,8 +455,15 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
   @override
   Widget build(BuildContext context) {
     final isEdit = widget.recipe?.id != null;
-    return WillPopScope(
-      onWillPop: _onWillPop,
+    return PopScope(
+      canPop: !_hasChanges,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final shouldPop = await _onWillPop();
+        if (shouldPop && mounted) {
+          Navigator.pop(context);
+        }
+      },
       child: Scaffold(
         appBar: AppBar(
           title: Text(isEdit ? "编辑菜谱" : "新增菜谱"),
@@ -444,20 +514,35 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
                   ),
                 ),
                 const SizedBox(height: 20),
-                // 分类选择
-                DropdownButtonFormField<int>(
-                  value: _selectedCategoryId,
-                  decoration: const InputDecoration(
-                    labelText: "分类",
-                    border: OutlineInputBorder(),
-                  ),
-                  items: _categories.map((cat) {
-                    return DropdownMenuItem(value: cat.id, child: Text(cat.name));
-                  }).toList(),
-                  onChanged: (v) => setState(() => _selectedCategoryId = v),
+
+                // 分类选择（必填） + 快速新建按钮
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        value: _selectedCategoryId,
+                        decoration: const InputDecoration(
+                          labelText: "分类 *",
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _categories.map((cat) {
+                          return DropdownMenuItem(value: cat.id, child: Text(cat.name));
+                        }).toList(),
+                        onChanged: (v) => setState(() => _selectedCategoryId = v),
+                        validator: (v) => v == null ? '请选择分类' : null,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle_outline, color: Colors.orange),
+                      tooltip: '新建分类',
+                      onPressed: _quickCreateCategory,
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
-                // 名称
+
+                // 菜名
                 TextFormField(
                   controller: _nameCtrl,
                   decoration: const InputDecoration(
@@ -465,6 +550,18 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
                     border: OutlineInputBorder(),
                   ),
                   validator: (v) => (v == null || v.trim().isEmpty) ? "请输入菜谱名称" : null,
+                ),
+                const SizedBox(height: 16),
+
+                // 耗时（新增字段）
+                TextFormField(
+                  controller: _timeCtrl,
+                  decoration: const InputDecoration(
+                    labelText: "耗时（可选）",
+                    hintText: "如：30分钟、1小时",
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.timer_outlined),
+                  ),
                 ),
                 const SizedBox(height: 24),
 
@@ -504,12 +601,11 @@ class _RecipeEditPageState extends State<RecipeEditPage> with SingleTickerProvid
                     ),
                     tabs: _variants.asMap().entries.map((entry) {
                       final idx = entry.key;
-                      final v = entry.value;
                       return Tab(
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(_variantNameCtrls[idx].text.isEmpty ? v.name : _variantNameCtrls[idx].text),
+                            Text(_variantNameCtrls[idx].text.isEmpty ? '做法 ${idx + 1}' : _variantNameCtrls[idx].text),
                             if (_variants.length > 1) ...[
                               const SizedBox(width: 4),
                               GestureDetector(

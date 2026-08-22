@@ -1,70 +1,72 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
-import '../models/recipe.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/category.dart';
+import '../models/recipe.dart';
 import '../services/database_service.dart';
-import '../services/ai_api_service.dart';
-import '../services/theme_manager.dart';
-import 'recipe_detail_page.dart';
+import '../utils/constants.dart';
 import 'recipe_edit_page.dart';
-import 'ai_recipe_page.dart';
+import 'recipe_detail_page.dart';
 import 'settings_page.dart';
+import '../main.dart'; // 全局刷新通知器
 
+/// 藏膳页面：菜谱列表 + 搜索 + 分类筛选
+/// 所有分类动态渲染，搜索带 300ms 防抖。
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final ValueNotifier<int> refreshNotifier;
+
+  const HomePage({super.key, required this.refreshNotifier});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+class _HomePageState extends State<HomePage> {
   List<Recipe> _recipes = [];
   List<Category> _categories = [];
   int? _selectedCategoryId;
-  String _keyword = "";
   bool _loading = true;
   String? _errorMsg;
 
-  final TextEditingController _searchCtrl = TextEditingController();
+  // 搜索
+  final _searchCtrl = TextEditingController();
+  bool _showAdvancedSearch = false;
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _loadData();
+    widget.refreshNotifier.addListener(_refresh);
+    _searchCtrl.addListener(_onSearchChanged);
+    _load();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
+    widget.refreshNotifier.removeListener(_refresh);
+    _searchCtrl.removeListener(_onSearchChanged);
     _searchCtrl.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _loadData();
-    }
-  }
+  void _refresh() => _load();
 
-  Future<void> _loadData() async {
+  Future<void> _load() async {
     setState(() {
       _loading = true;
       _errorMsg = null;
     });
     try {
-      final recipes = await DatabaseService.instance.getAll(
-        keyword: _keyword,
+      final cats = await DatabaseService.instance().getAllCategories();
+      final recipes = await DatabaseService.instance().searchRecipes(
+        keyword: _searchCtrl.text,
         categoryId: _selectedCategoryId,
       );
-      final categories = await DatabaseService.instance.getAllCategories();
       if (mounted) {
         setState(() {
+          _categories = cats;
           _recipes = recipes;
-          _categories = categories;
           _loading = false;
         });
       }
@@ -72,336 +74,238 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _loading = false;
-          _errorMsg = "加载失败: $e";
+          _errorMsg = '加载失败: $e';
         });
       }
     }
   }
 
-  Future<void> _goToEdit({Recipe? recipe}) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RecipeEditPage(recipe: recipe),
-      ),
-    );
-    if (mounted && result == true) _loadData();
+  /// 搜索防抖：300ms 后执行
+  void _onSearchChanged() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      _search();
+    });
   }
 
-  Future<void> _goToAiRecipe() async {
+  Future<void> _search() async {
+    try {
+      final results = await DatabaseService.instance().searchRecipes(
+        keyword: _searchCtrl.text,
+        categoryId: _selectedCategoryId,
+      );
+      if (mounted) {
+        setState(() => _recipes = results);
+      }
+    } catch (_) {}
+  }
+
+  void _selectCategory(int? categoryId) {
+    setState(() => _selectedCategoryId = categoryId);
+    _search();
+  }
+
+  Future<void> _addRecipe() async {
     final result = await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const AiRecipePage()),
+      MaterialPageRoute(builder: (_) => const RecipeEditPage()),
     );
-    if (!mounted) return;
-    if (result is AiRecipeResult) {
-      final recipe = Recipe(
-        name: result.name,
-        ingredients: result.ingredients,
-        steps: result.steps,
-        tips: result.tips,
-      );
-      final saved = await Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => RecipeEditPage(recipe: recipe)),
-      );
-      if (mounted && saved == true) _loadData();
+    // 保存后触发全局刷新
+    if (result == true) {
+      globalRefreshNotifier.value++;
     }
   }
 
-  Future<void> _deleteRecipe(Recipe recipe) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("删除菜谱"),
-        content: Text("确定要删除「${recipe.name}」吗？"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("删除", style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-    if (mounted && confirm == true && recipe.id != null) {
-      await DatabaseService.instance.delete(recipe.id!);
-      if (mounted) _loadData();
-    }
+  void _openSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SettingsPage()),
+    ).then((_) {
+      // 设置页可能修改了分类，需要刷新
+      _load();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final themeManager = Provider.of<ThemeManager>(context);
-    final bgImage = themeManager.getBackgroundImage();
-    final hasBg = bgImage != null;
-
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        title: const Text("藏膳"),
+        title: const Text('藏膳'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsPage()),
-              );
-              _loadData();
-            },
+            tooltip: '设置',
+            onPressed: _openSettings,
           ),
         ],
       ),
-      body: Stack(
+      floatingActionButton: FloatingActionButton(
+        onPressed: _addRecipe,
+        child: const Icon(Icons.add),
+      ),
+      body: Column(
         children: [
-          if (hasBg)
-            Positioned.fill(
-              child: Image(
-                image: bgImage!,
-                fit: BoxFit.cover,
+          // ===== 搜索栏 =====
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                hintText: '搜索菜谱...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchCtrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                filled: true,
+                fillColor: Colors.grey.shade100,
+                contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
               ),
             ),
-          if (hasBg)
-            Positioned.fill(
-              child: Container(color: Colors.white.withOpacity(0.55)),
-            ),
-          Column(
-            children: [
-              // Search bar
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                child: TextField(
-                  controller: _searchCtrl,
-                  decoration: InputDecoration(
-                    hintText: "搜索菜名、食材...",
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _keyword.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchCtrl.clear();
-                              _keyword = "";
-                              _loadData();
-                            },
-                          )
-                        : null,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    filled: true,
-                    fillColor: hasBg ? Colors.white.withOpacity(0.85) : null,
+          ),
+
+          // ===== 高级搜索折叠按钮 =====
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  icon: Icon(
+                    _showAdvancedSearch ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
                   ),
-                  onChanged: (v) {
-                    _keyword = v;
-                    _loadData();
-                  },
+                  label: Text(_showAdvancedSearch ? '收起筛选' : '高级搜索'),
+                  onPressed: () => setState(() => _showAdvancedSearch = !_showAdvancedSearch),
                 ),
+              ],
+            ),
+          ),
+
+          // ===== 分类筛选栏（动态渲染） =====
+          if (_showAdvancedSearch && _categories.isNotEmpty)
+            Container(
+              height: 44,
+              margin: const EdgeInsets.only(bottom: 4),
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                itemCount: _categories.length + 1, // +1 为"全部"
+                itemBuilder: (_, i) {
+                  if (i == 0) {
+                    return _buildCategoryChip(null, '全部');
+                  }
+                  final cat = _categories[i - 1];
+                  return _buildCategoryChip(cat.id!, cat.name);
+                },
               ),
-              // Category filters
-              if (_categories.isNotEmpty)
-                SizedBox(
-                  height: 44,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    itemCount: _categories.length + 1,
-                    itemBuilder: (ctx, i) {
-                      if (i == 0) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: FilterChip(
-                            label: Text("全部"),
-                            selected: _selectedCategoryId == null,
-                            onSelected: (_) {
-                              setState(() => _selectedCategoryId = null);
-                              _loadData();
-                            },
-                            selectedColor: theme.colorScheme.primaryContainer,
-                          ),
-                        );
-                      }
-                      final cat = _categories[i - 1];
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: FilterChip(
-                          label: Text(cat.name),
-                          selected: _selectedCategoryId == cat.id,
-                          onSelected: (_) {
-                            setState(() => _selectedCategoryId = _selectedCategoryId == cat.id ? null : cat.id);
-                            _loadData();
-                          },
-                          selectedColor: theme.colorScheme.primaryContainer,
+            ),
+
+          const Divider(height: 1),
+
+          // ===== 菜谱列表 =====
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _errorMsg != null
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                            const SizedBox(height: 12),
+                            Text(_errorMsg!, style: const TextStyle(color: Colors.red)),
+                            const SizedBox(height: 16),
+                            ElevatedButton(onPressed: _load, child: const Text('重试')),
+                          ],
                         ),
-                      );
-                    },
-                  ),
-                ),
-              // List
-              Expanded(
-                child: _loading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _errorMsg != null
-                        ? Center(
+                      )
+                    : _recipes.isEmpty
+                        ? const Center(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
-                                const SizedBox(height: 12),
-                                Text(_errorMsg!, style: TextStyle(color: theme.colorScheme.error)),
-                                const SizedBox(height: 16),
-                                ElevatedButton(onPressed: _loadData, child: const Text("重试")),
+                                Icon(Icons.menu_book_outlined, size: 64, color: Colors.grey),
+                                SizedBox(height: 16),
+                                Text('暂无菜谱', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                                SizedBox(height: 8),
+                                Text('点击右下角 + 添加你的第一个菜谱',
+                                    style: TextStyle(color: Colors.grey, fontSize: 13)),
                               ],
                             ),
                           )
-                        : _recipes.isEmpty
-                            ? _emptyView(theme)
-                            : RefreshIndicator(
-                                onRefresh: _loadData,
-                                child: ListView.builder(
-                                  padding: const EdgeInsets.all(12),
-                                  itemCount: _recipes.length,
-                                  itemBuilder: (ctx, i) => _recipeCard(_recipes[i]),
-                                ),
-                              ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      floatingActionButton: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          FloatingActionButton.extended(
-            heroTag: "ai_btn",
-            onPressed: _goToAiRecipe,
-            backgroundColor: theme.colorScheme.secondaryContainer,
-            foregroundColor: theme.colorScheme.onSecondaryContainer,
-            icon: const Icon(Icons.auto_awesome),
-            label: const Text("AI 生成"),
-          ),
-          const SizedBox(height: 12),
-          FloatingActionButton(
-            heroTag: "add_btn",
-            onPressed: () => _goToEdit(),
-            backgroundColor: theme.colorScheme.primary,
-            foregroundColor: theme.colorScheme.onPrimary,
-            child: const Icon(Icons.add),
+                        : RefreshIndicator(
+                            onRefresh: _load,
+                            child: ListView.builder(
+                              padding: const EdgeInsets.all(8),
+                              itemCount: _recipes.length,
+                              itemBuilder: (_, i) => _buildRecipeCard(_recipes[i]),
+                            ),
+                          ),
           ),
         ],
       ),
     );
   }
 
-  Widget _recipeCard(Recipe recipe) {
-    final theme = Theme.of(context);
-    final themeManager = Provider.of<ThemeManager>(context, listen: false);
-    final bgImage = themeManager.getBackgroundImage();
-    final hasBg = bgImage != null;
-    final cardBg = hasBg ? Colors.white.withOpacity(0.9) : null;
+  Widget _buildCategoryChip(int? categoryId, String label) {
+    final selected = _selectedCategoryId == categoryId;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        selectedColor: Theme.of(context).colorScheme.primaryContainer,
+        onSelected: (_) => _selectCategory(selected ? null : categoryId),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
 
+  Widget _buildRecipeCard(Recipe recipe) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      elevation: 2,
-      color: cardBg,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () async {
-          final changed = await Navigator.push(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        title: Text(recipe.name, style: const TextStyle(fontWeight: FontWeight.w500)),
+        subtitle: FutureBuilder<List<String>>(
+          future: DatabaseService.instance().getSortedTags(),
+          builder: (_, snapshot) {
+            final sortedOrder = snapshot.data ?? [];
+            final sortedTags = List<String>.from(recipe.tagList)
+              ..sort((a, b) {
+                final ai = sortedOrder.indexOf(a);
+                final bi = sortedOrder.indexOf(b);
+                if (ai == -1 && bi == -1) return a.compareTo(b);
+                if (ai == -1) return 1;
+                if (bi == -1) return -1;
+                return ai.compareTo(bi);
+              });
+            return Text(
+              [
+                if (recipe.time.isNotEmpty) '⏱ ${recipe.time}',
+                if (sortedTags.isNotEmpty) '🏷 ${sortedTags.join("、")}',
+              ].join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            );
+          },
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () {
+          Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => RecipeDetailPage(recipeId: recipe.id!)),
-          );
-          if (mounted && changed == true) _loadData();
+          ).then((_) {
+            _load();
+          });
         },
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: recipe.imagePath != null && File(recipe.imagePath!).existsSync()
-                    ? Image.file(File(recipe.imagePath!), width: 72, height: 72, fit: BoxFit.cover)
-                    : Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.primaryContainer.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(Icons.restaurant, color: theme.colorScheme.primary, size: 32),
-                      ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      recipe.name,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: theme.colorScheme.onSurface,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      recipe.ingredients.replaceAll("\n", "、"),
-                      style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    if (recipe.tagList.isNotEmpty)
-                      Wrap(
-                        spacing: 4,
-                        children: recipe.tagList
-                            .map((t) => Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: theme.colorScheme.tertiaryContainer,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    t,
-                                    style: TextStyle(fontSize: 11, color: theme.colorScheme.onTertiaryContainer),
-                                  ),
-                                ))
-                            .toList(),
-                      ),
-                    const SizedBox(height: 4),
-                    Text(
-                      DateFormat("yyyy-MM-dd HH:mm").format(DateTime.fromMillisecondsSinceEpoch(recipe.updatedAt)),
-                      style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                icon: Icon(Icons.delete_outline, size: 20, color: theme.colorScheme.error),
-                onPressed: () => _deleteRecipe(recipe),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _emptyView(ThemeData theme) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.restaurant_menu, size: 64, color: theme.colorScheme.outlineVariant),
-          const SizedBox(height: 12),
-          Text("还没有菜谱", style: TextStyle(fontSize: 16, color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 8),
-          Text("点击 + 或 AI 生成 开始吧", style: TextStyle(fontSize: 13, color: theme.colorScheme.outline)),
-        ],
       ),
     );
   }
